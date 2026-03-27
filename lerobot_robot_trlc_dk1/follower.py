@@ -25,6 +25,8 @@ from lerobot.cameras.utils import make_cameras_from_configs
 from lerobot.robots import Robot, RobotConfig
 from lerobot.utils.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
 
+from .sensors import ACS712Sensor
+
 logger = logging.getLogger(__name__)
 
 JOINT_NAMES = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
@@ -58,6 +60,9 @@ class DK1FollowerConfig(RobotConfig):
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
     # POS_VEL mode only
     joint_velocity_scaling: float = 0.2
+    # External current sensor: serial port of an Arduino Nano running acs712_current_sensor.ino
+    # e.g. "/dev/ttyUSB0". Set to None to disable.
+    current_sensor_port: str | None = None
 
 
 class DK1Follower(Robot):
@@ -80,6 +85,9 @@ class DK1Follower(Robot):
         super().__init__(config)
         self.config = config
         self.cameras = make_cameras_from_configs(config.cameras)
+        self._current_sensor: ACS712Sensor | None = (
+            ACS712Sensor(config.current_sensor_port) if config.current_sensor_port else None
+        )
 
         # Impedance mode state
         self._robot = None              # DK1Robot | None
@@ -100,11 +108,14 @@ class DK1Follower(Robot):
     def observation_features(self) -> dict[str, type | tuple]:
         motor_ft = {f"{j}.pos": float for j in JOINT_NAMES}
         motor_ft["gripper.pos"] = float
+        torque_ft = {f"{j}.torque": float for j in JOINT_NAMES}
+        torque_ft["gripper.torque"] = float
         cam_ft = {
             cam: (self.config.cameras[cam].height, self.config.cameras[cam].width, 3)
             for cam in self.cameras
         }
-        return {**motor_ft, **cam_ft}
+        sensor_ft = {"external_current_a": float} if self.config.current_sensor_port else {}
+        return {**motor_ft, **torque_ft, **cam_ft, **sensor_ft}
 
     @cached_property
     def action_features(self) -> dict[str, type]:
@@ -117,14 +128,16 @@ class DK1Follower(Robot):
     @property
     def is_connected(self) -> bool:
         cams_ok = all(cam.is_connected for cam in self.cameras.values())
+        sensor_ok = self._current_sensor is None or self._current_sensor.is_connected
         if self.config.control_mode == "impedance":
             return (
                 self._robot is not None
                 and self._robot._motor_chain.is_running
                 and cams_ok
+                and sensor_ok
             )
         else:
-            return self._bus_connected and cams_ok
+            return self._bus_connected and cams_ok and sensor_ok
 
     def connect(self) -> None:
         if self.is_connected:
@@ -141,6 +154,8 @@ class DK1Follower(Robot):
 
         for cam in self.cameras.values():
             cam.connect()
+        if self._current_sensor is not None:
+            self._current_sensor.connect()
 
         logger.info(f"{self} connected (mode={self.config.control_mode}).")
 
@@ -231,6 +246,8 @@ class DK1Follower(Robot):
 
         for cam_key, cam in self.cameras.items():
             obs[cam_key] = cam.async_read()
+        if self._current_sensor is not None:
+            obs["external_current_a"] = self._current_sensor.get_current()
 
         return obs
 
@@ -239,6 +256,9 @@ class DK1Follower(Robot):
         gripper = self._robot.get_gripper_state()
         obs = {f"{j}.pos": float(state["pos"][i]) for i, j in enumerate(JOINT_NAMES)}
         obs["gripper.pos"] = gripper["pos"]
+        for i, j in enumerate(JOINT_NAMES):
+            obs[f"{j}.torque"] = float(state["torque"][i])
+        obs["gripper.torque"] = gripper["torque"]
         return obs
 
     def _get_observation_pos_vel(self) -> dict[str, Any]:
@@ -253,6 +273,7 @@ class DK1Follower(Robot):
                 )
             else:
                 obs[f"{key}.pos"] = motor.getPosition()
+            obs[f"{key}.torque"] = motor.getTorque()
         return obs
 
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
@@ -319,5 +340,7 @@ class DK1Follower(Robot):
 
         for cam in self.cameras.values():
             cam.disconnect()
+        if self._current_sensor is not None:
+            self._current_sensor.disconnect()
 
         logger.info(f"{self} disconnected.")
