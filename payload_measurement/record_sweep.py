@@ -24,7 +24,11 @@ from lerobot.datasets.feature_utils import hw_to_dataset_features
 from lerobot.scripts.lerobot_record import record_loop
 from lerobot.utils.control_utils import init_keyboard_listener
 from lerobot.processor import make_default_processors
-from lerobot.utils.visualization_utils import init_rerun
+import threading
+
+import rerun.blueprint as rrb
+
+from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 
 from lerobot_robot_trlc_dk1.follower import DK1Follower, DK1FollowerConfig
 from lerobot_robot_trlc_dk1.leader import DK1Leader, DK1LeaderConfig
@@ -35,7 +39,7 @@ FOLLOWER_PORT       = "/dev/tty.usbmodem00000000050C1"
 LEADER_PORT         = "/dev/tty.usbmodem59700734821"
 CURRENT_SENSOR_PORT = "/dev/tty.usbserial-BG0038JI"
 
-FPS             = 30
+FPS             = 60
 MAX_DURATION_S  = 600   # hard cutoff — press right arrow to finish early
 OUTPUT_DIR      = Path("outputs/payload_measurement/sweep")
 
@@ -77,11 +81,43 @@ def teleop_to_position(prompt: str) -> None:
     print(prompt)
     while not events["exit_early"]:
         follower.send_action(leader.get_action())
+        log_rerun_data(observation=follower.get_observation())
+        time.sleep(1 / FPS)
+
+
+def _rerun_monitor(stop: threading.Event) -> None:
+    """Background thread: log observations to Rerun while record_loop runs."""
+    while not stop.is_set():
+        log_rerun_data(observation=follower.get_observation())
         time.sleep(1 / FPS)
 
 
 print("\n--- Payload sweep recorder ---")
 init_rerun(session_name="sweep_recording")
+import rerun as rr
+_joints = [f"joint_{i}" for i in range(1, 7)]
+rr.send_blueprint(rrb.Blueprint(
+    rrb.Grid(
+        rrb.TimeSeriesView(
+            name="Torques (Nm)",
+            contents=[f"observation.{j}.torque" for j in _joints] + ["observation.gripper.torque"],
+        ),
+        rrb.TimeSeriesView(
+            name="Temperatures (°C)",
+            contents=[f"observation.{j}.temp_motor" for j in _joints]
+                    + [f"observation.{j}.temp_mos" for j in _joints],
+        ),
+        rrb.TimeSeriesView(
+            name="Supply Current (A)",
+            contents=["observation.external_current_a"],
+        ),
+        rrb.TimeSeriesView(
+            name="Positions (rad)",
+            contents=[f"observation.{j}.pos" for j in _joints] + ["observation.gripper.pos"],
+        ),
+    ),
+    collapse_panels=False,
+))
 teleop_to_position("Teleop the arm to the START position, then press RIGHT ARROW to begin recording.")
 
 while True:
@@ -89,6 +125,8 @@ while True:
     events["rerecord_episode"] = False
 
     print("Recording — perform the reach sweep, then press RIGHT ARROW to finish.")
+    _stop = threading.Event()
+    threading.Thread(target=_rerun_monitor, args=(_stop,), daemon=True).start()
     record_loop(
         robot=follower,
         events=events,
@@ -100,8 +138,8 @@ while True:
         dataset=dataset,
         control_time_s=MAX_DURATION_S,
         single_task="payload reach sweep",
-        display_data=True,
     )
+    _stop.set()
 
     num_frames = dataset.episode_buffer["size"]
     duration_s = num_frames / FPS

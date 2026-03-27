@@ -18,6 +18,8 @@ class Motor:
         self.state_q = float(0)
         self.state_dq = float(0)
         self.state_tau = float(0)
+        self.state_temp_mos = 0     # °C, byte[6] = T_MOS  (MOSFET/driver temperature)
+        self.state_temp_motor = 0   # °C, byte[7] = T_Rotor (motor coil temperature)
         self.SlaveID = SlaveID
         self.MasterID = MasterID
         self.MotorType = MotorType
@@ -25,10 +27,12 @@ class Motor:
         self.NowControlMode = Control_Type.MIT
         self.temp_param_dict = {}
 
-    def recv_data(self, q: float, dq: float, tau: float):
+    def recv_data(self, q: float, dq: float, tau: float, temp_mos: int = 0, temp_motor: int = 0):
         self.state_q = q
         self.state_dq = dq
         self.state_tau = tau
+        self.state_temp_mos = temp_mos      # data[6] = T_MOS
+        self.state_temp_motor = temp_motor   # data[7] = T_Rotor
 
     def getPosition(self):
         """
@@ -50,6 +54,14 @@ class Motor:
         :return: the torque of the motor 电机力矩
         """
         return self.state_tau
+
+    def getTemperatureMotor(self) -> int:
+        """Motor coil (rotor winding) temperature in °C — byte[7], T_Rotor. Protect: ≤100°C."""
+        return self.state_temp_motor
+
+    def getTemperatureMOS(self) -> int:
+        """MOSFET/driver board temperature in °C — byte[6], T_MOS. Protect: ≤120°C."""
+        return self.state_temp_mos
 
     def getParam(self, RID):
         """
@@ -271,7 +283,7 @@ class MotorControl:
                     recv_q = uint_to_float(q_uint, -Q_MAX, Q_MAX, 16)
                     recv_dq = uint_to_float(dq_uint, -DQ_MAX, DQ_MAX, 12)
                     recv_tau = uint_to_float(tau_uint, -TAU_MAX, TAU_MAX, 12)
-                    self.motors_map[CANID].recv_data(recv_q, recv_dq, recv_tau)
+                    self.motors_map[CANID].recv_data(recv_q, recv_dq, recv_tau, int(data[6]), int(data[7]))
             else:
                 MasterID=data[0] & 0x0f
                 if MasterID in self.motors_map:
@@ -285,7 +297,7 @@ class MotorControl:
                     recv_q = uint_to_float(q_uint, -Q_MAX, Q_MAX, 16)
                     recv_dq = uint_to_float(dq_uint, -DQ_MAX, DQ_MAX, 12)
                     recv_tau = uint_to_float(tau_uint, -TAU_MAX, TAU_MAX, 12)
-                    self.motors_map[MasterID].recv_data(recv_q, recv_dq, recv_tau)
+                    self.motors_map[MasterID].recv_data(recv_q, recv_dq, recv_tau, int(data[6]), int(data[7]))
 
 
     def __process_set_param_packet(self, data, CANID, CMD):
