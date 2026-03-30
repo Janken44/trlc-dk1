@@ -52,9 +52,9 @@ class DK1RobotConfig:
     # Joint 6   (DM4310): full ±π
     joint_pos_limits: np.ndarray = field(
         default_factory=lambda: np.array([
-            [-math.pi,       math.pi      ],   # joint_1
-            [-math.pi,       math.pi      ],   # joint_2
-            [-math.pi,       math.pi      ],   # joint_3
+            [-math.pi/2,       math.pi/2      ],   # joint_1
+            [0,       math.pi      ],   # joint_2
+            [-math.pi/6,       math.pi      ],   # joint_3
             [-100*math.pi/180, 100*math.pi/180],  # joint_4
             [-90*math.pi/180,  90*math.pi/180 ],  # joint_5
             [-math.pi,       math.pi      ],   # joint_6

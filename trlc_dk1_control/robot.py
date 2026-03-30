@@ -149,12 +149,14 @@ class DK1Robot:
         """
         pos, vel, torque = self._motor_chain.get_state()
         temp_motor, temp_mos = self._motor_chain.get_temperatures()
+        error = self._motor_chain.get_errors()
         return {
             "pos": pos[:6].copy(),
             "vel": vel[:6].copy(),
             "torque": torque[:6].copy(),
             "temp_motor": temp_motor[:6].copy(),
             "temp_mos": temp_mos[:6].copy(),
+            "error": error[:6].copy(),
         }
 
     def get_gripper_state(self) -> dict[str, float]:

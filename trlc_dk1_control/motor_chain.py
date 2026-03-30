@@ -60,6 +60,7 @@ class DK1MotorChain:
         self._torque = np.zeros(7)     # Nm
         self._temp_motor = np.zeros(7, dtype=np.int32)  # °C coil
         self._temp_mos = np.zeros(7, dtype=np.int32)    # °C MOS/board
+        self._error = np.zeros(7, dtype=np.int32)       # 4-bit error/status code
 
         # Shared commands (written by server thread, read by motor thread)
         self._arm_kp = config.arm_kp.copy()
@@ -169,6 +170,11 @@ class DK1MotorChain:
         """Return (temp_motor(7,), temp_mos(7,)) in °C — thread-safe copy."""
         with self._lock:
             return self._temp_motor.copy(), self._temp_mos.copy()
+
+    def get_errors(self) -> np.ndarray:
+        """Return error(7,) — 4-bit error/status codes, thread-safe copy."""
+        with self._lock:
+            return self._error.copy()
 
     @property
     def is_running(self) -> bool:
@@ -342,6 +348,7 @@ class DK1MotorChain:
             new_torque = np.empty(7)
             new_temp_motor = np.empty(7, dtype=np.int32)
             new_temp_mos = np.empty(7, dtype=np.int32)
+            new_error = np.empty(7, dtype=np.int32)
             for i, name in enumerate(arm_names):
                 m = self._motors[name]
                 new_pos[i] = m.getPosition()
@@ -349,12 +356,14 @@ class DK1MotorChain:
                 new_torque[i] = m.getTorque()
                 new_temp_motor[i] = m.getTemperatureMotor()
                 new_temp_mos[i] = m.getTemperatureMOS()
+                new_error[i] = m.getError()
             gm = self._motors["gripper"]
             new_pos[6] = gm.getPosition()
             new_vel[6] = gm.getVelocity()
             new_torque[6] = gm.getTorque()
             new_temp_motor[6] = gm.getTemperatureMotor()
             new_temp_mos[6] = gm.getTemperatureMOS()
+            new_error[6] = gm.getError()
 
             # Update shared state buffer
             with self._lock:
@@ -363,6 +372,7 @@ class DK1MotorChain:
                 self._torque = new_torque
                 self._temp_motor = new_temp_motor
                 self._temp_mos = new_temp_mos
+                self._error = new_error
 
             # Maintain loop period — sleep most of the time, busywait the tail
             # for precision (time.sleep has ~1-2 ms granularity on macOS)
