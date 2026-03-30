@@ -110,12 +110,15 @@ class DK1Follower(Robot):
         motor_ft["gripper.pos"] = float
         torque_ft = {f"{j}.torque": float for j in JOINT_NAMES}
         torque_ft["gripper.torque"] = float
+        temp_ft = {f"{j}.temp_motor": float for j in JOINT_NAMES}
+        temp_ft.update({f"{j}.temp_mos": float for j in JOINT_NAMES})
+        error_ft = {f"{j}.error": float for j in JOINT_NAMES}
         cam_ft = {
             cam: (self.config.cameras[cam].height, self.config.cameras[cam].width, 3)
             for cam in self.cameras
         }
         sensor_ft = {"external_current_a": float} if self.config.current_sensor_port else {}
-        return {**motor_ft, **torque_ft, **cam_ft, **sensor_ft}
+        return {**motor_ft, **torque_ft, **temp_ft, **error_ft, **cam_ft, **sensor_ft}
 
     @cached_property
     def action_features(self) -> dict[str, type]:
@@ -258,6 +261,9 @@ class DK1Follower(Robot):
         obs["gripper.pos"] = gripper["pos"]
         for i, j in enumerate(JOINT_NAMES):
             obs[f"{j}.torque"] = float(state["torque"][i])
+            obs[f"{j}.temp_motor"] = float(state["temp_motor"][i])
+            obs[f"{j}.temp_mos"] = float(state["temp_mos"][i])
+            obs[f"{j}.error"] = float(state["error"][i])
         obs["gripper.torque"] = gripper["torque"]
         return obs
 
@@ -274,6 +280,12 @@ class DK1Follower(Robot):
             else:
                 obs[f"{key}.pos"] = motor.getPosition()
             obs[f"{key}.torque"] = motor.getTorque()
+        # Temperature is populated by refresh_motor_status() from CAN frame bytes[6]/[7].
+        # Mirrors _get_observation_impedance() so the observation schema is identical.
+        for j in JOINT_NAMES:
+            motor = self._motors[j]
+            obs[f"{j}.temp_motor"] = float(motor.getTemperatureMotor())
+            obs[f"{j}.temp_mos"] = float(motor.getTemperatureMOS())
         return obs
 
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:

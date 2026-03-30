@@ -55,9 +55,11 @@ class DK1MotorChain:
         self._lock = threading.Lock()
 
         # Shared state (written by motor thread, read by server thread)
-        self._pos = np.zeros(7)     # radians, [joint_1..joint_6, gripper]
-        self._vel = np.zeros(7)     # rad/s
-        self._torque = np.zeros(7)  # Nm
+        self._pos = np.zeros(7)        # radians, [joint_1..joint_6, gripper]
+        self._vel = np.zeros(7)        # rad/s
+        self._torque = np.zeros(7)     # Nm
+        self._temp_motor = np.zeros(7, dtype=np.int32)  # °C coil
+        self._temp_mos = np.zeros(7, dtype=np.int32)    # °C MOS/board
 
         # Shared commands (written by server thread, read by motor thread)
         self._arm_kp = config.arm_kp.copy()
@@ -162,6 +164,11 @@ class DK1MotorChain:
         """Return (pos(7,), vel(7,), torque(7,)) — thread-safe copy."""
         with self._lock:
             return self._pos.copy(), self._vel.copy(), self._torque.copy()
+
+    def get_temperatures(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return (temp_motor(7,), temp_mos(7,)) in °C — thread-safe copy."""
+        with self._lock:
+            return self._temp_motor.copy(), self._temp_mos.copy()
 
     @property
     def is_running(self) -> bool:
@@ -333,21 +340,29 @@ class DK1MotorChain:
             new_pos = np.empty(7)
             new_vel = np.empty(7)
             new_torque = np.empty(7)
+            new_temp_motor = np.empty(7, dtype=np.int32)
+            new_temp_mos = np.empty(7, dtype=np.int32)
             for i, name in enumerate(arm_names):
                 m = self._motors[name]
                 new_pos[i] = m.getPosition()
                 new_vel[i] = m.getVelocity()
                 new_torque[i] = m.getTorque()
+                new_temp_motor[i] = m.getTemperatureMotor()
+                new_temp_mos[i] = m.getTemperatureMOS()
             gm = self._motors["gripper"]
             new_pos[6] = gm.getPosition()
             new_vel[6] = gm.getVelocity()
             new_torque[6] = gm.getTorque()
+            new_temp_motor[6] = gm.getTemperatureMotor()
+            new_temp_mos[6] = gm.getTemperatureMOS()
 
             # Update shared state buffer
             with self._lock:
                 self._pos = new_pos
                 self._vel = new_vel
                 self._torque = new_torque
+                self._temp_motor = new_temp_motor
+                self._temp_mos = new_temp_mos
 
             # Maintain loop period — sleep most of the time, busywait the tail
             # for precision (time.sleep has ~1-2 ms granularity on macOS)
