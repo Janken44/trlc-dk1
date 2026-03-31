@@ -15,6 +15,7 @@ outputs/*
 
 #plotting outputs
 *.pdf
+*.png
 
 #Arduino sketches
 payload_measurement/arduino/*

@@ -12,6 +12,9 @@ dependencies = [
   "dynamixel-sdk>=3.7.31",
   "lerobot@https://github.com/huggingface/lerobot.git",
   "mujoco>=3.0.0",
+  "matplotlib>=3.10.8",
+  "scipy>=1.13.0",
+  "pyroki@git+https://github.com/chungmin99/pyroki.git",
 ]
 
 authors = [
