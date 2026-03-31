@@ -5,6 +5,20 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+#datalogging outputs
+outputs/*
+*.rrd
+*.csv
+
+#Claude collaterals
+*.md
+
+#plotting outputs
+*.pdf
+
+#Arduino sketches
+payload_measurement/arduino/*
+
 # C extensions
 *.so
 

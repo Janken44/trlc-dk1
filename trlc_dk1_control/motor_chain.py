@@ -388,6 +388,6 @@ class DK1MotorChain:
             now = time.monotonic()
             if now - self._last_perf_log >= 5.0:
                 hz = self._loop_count / (now - self._last_perf_log)
-                print(f"[motor]  {hz:6.1f} Hz  (target {self._config.motor_thread_hz:.0f} Hz)  loop={elapsed*1e3:.2f} ms")
+                logger.debug("[motor]  %6.1f Hz  (target %.0f Hz)  loop=%.2f ms", hz, self._config.motor_thread_hz, elapsed*1e3)
                 self._loop_count = 0
                 self._last_perf_log = now

@@ -280,6 +280,6 @@ class DK1Robot:
             now = time.monotonic()
             if now - last_log >= 5.0:
                 hz = loop_count / (now - last_log)
-                print(f"[server] {hz:6.1f} Hz  (target {cfg.server_thread_hz:.0f} Hz)  loop={elapsed*1e3:.2f} ms")
+                logger.debug("[server] %6.1f Hz  (target %.0f Hz)  loop=%.2f ms", hz, cfg.server_thread_hz, elapsed*1e3)
                 loop_count = 0
                 last_log = now

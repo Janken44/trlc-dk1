@@ -286,6 +286,7 @@ class DK1Follower(Robot):
             motor = self._motors[j]
             obs[f"{j}.temp_motor"] = float(motor.getTemperatureMotor())
             obs[f"{j}.temp_mos"] = float(motor.getTemperatureMOS())
+            obs[f"{j}.error"] = float(motor.getError())
         return obs
 
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
