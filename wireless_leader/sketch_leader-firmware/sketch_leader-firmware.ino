@@ -276,7 +276,7 @@ void setup() {
     Serial.begin(115200);
 
     DxlSerial.begin(DXL_BAUD, SERIAL_8N1, DXL_RX_PIN, DXL_TX_PIN);
-    delay(100);
+    delay(1000);  // wait for motors to finish booting
     configureDynamixel();
 
     BLEDevice::init("DK1-Leader");
