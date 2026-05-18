@@ -38,7 +38,11 @@ class DK1RobotConfig:
     motor_thread_hz: float = 250.0
     server_thread_hz: float = 300.0
 
-    # MIT PD gains for 6 arm joints [j1, j2, j3, j4, j5, j6]
+    # "impedance" — host-side MIT PD + gravity compensation (compliant arm).
+    # "position"  — motors' onboard POS_VEL controller (stiff, no gravity comp).
+    control_mode: str = "impedance"
+
+    # MIT PD gains for 6 arm joints [j1, j2, j3, j4, j5, j6] — impedance mode only
     arm_kp: np.ndarray = field(
         default_factory=lambda: np.array([80.0, 70.0, 60.0, 20.0, 20.0, 10.0])
     )
@@ -46,13 +50,32 @@ class DK1RobotConfig:
         default_factory=lambda: np.array([5.0, 5.0, 4.0, 1.0, 1.0, 1.0])
     )
 
+    # POS_VEL mode — per-joint velocity limit (rad/s) used in control_Pos_Vel calls.
+    # Joints 1–3 (DM4340) are slow; joints 4–6 (DM4310) are fast. These match the
+    # legacy DK1Follower pos_vel defaults at joint_velocity_scaling = 0.3.
+    pos_mode_joint_vel: np.ndarray = field(
+        default_factory=lambda: np.array([
+            0.3 * 5.49,   # joint_1  (DM4340: 52.5 rpm)
+            0.3 * 5.49,   # joint_2
+            0.3 * 5.49,   # joint_3
+            0.3 * 20.94,  # joint_4  (DM4310: 200 rpm)
+            0.3 * 20.94,  # joint_5
+            0.3 * 20.94,  # joint_6
+        ])
+    )
+    # POS_VEL onboard PID for DM4340 (joints 1–3). DM4310 use factory defaults.
+    pos_mode_kp_apr_dm4340: float = 200.0
+    pos_mode_ki_apr_dm4340: float = 10.0
+    pos_mode_acc: float = 10.0     # rad/s² ramp
+    pos_mode_dec: float = -10.0
+
     # Joint position limits (radians), shape (6, 2) — [min, max] per joint
     # Joints 1-3 (DM4340): physically limited by arm geometry; use conservative ±π
     # Joints 4-5 (DM4310): taken from follower.py JOINT_LIMITS
     # Joint 6   (DM4310): full ±π
     joint_pos_limits: np.ndarray = field(
         default_factory=lambda: np.array([
-            [-math.pi,       math.pi      ],   # joint_1
+            [-math.pi/2,       math.pi/2      ],   # joint_1
             [-math.pi,       math.pi      ],   # joint_2
             [-math.pi,       math.pi      ],   # joint_3
             [-100*math.pi/180, 100*math.pi/180],  # joint_4

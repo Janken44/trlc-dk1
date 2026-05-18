@@ -56,14 +56,19 @@ class DK1Robot:
     def __init__(self, config: DK1RobotConfig) -> None:
         self._config = config
         self._motor_chain = DK1MotorChain(config)
+        self._impedance = (config.control_mode == "impedance")
 
-        if config.mjcf_path:
+        # Gravity comp is only useful in impedance mode (POS_VEL motors hold
+        # position via their own onboard PID).
+        if self._impedance and config.mjcf_path:
             self._grav_comp: GravityCompensator | NoGravityComp = GravityCompensator(
                 config.mjcf_path
             )
-        else:
+        elif self._impedance:
             self._grav_comp = NoGravityComp()
             logger.warning("Gravity compensation disabled (no mjcf_path provided)")
+        else:
+            self._grav_comp = NoGravityComp()
 
         # Server thread shared state — protected by _cmd_lock
         self._cmd_lock = threading.Lock()
@@ -196,11 +201,6 @@ class DK1Robot:
                     self._q_des = q_des
 
             # ------------------------------------------------------------------
-            # Gravity compensation
-            # ------------------------------------------------------------------
-            tau_ff = self._grav_comp.compute(pos[:6]) * cfg.gravity_comp_scale
-
-            # ------------------------------------------------------------------
             # Safety: joint position clamping (with buffer)
             # ------------------------------------------------------------------
             lims = cfg.joint_pos_limits
@@ -210,44 +210,48 @@ class DK1Robot:
                 lims[:, 1] - LIMIT_BUFFER,
             )
 
-            # ------------------------------------------------------------------
-            # Safety: torque limit clipping
-            # ------------------------------------------------------------------
-            tau_ff_safe = np.clip(tau_ff, -cfg.joint_torque_limits, cfg.joint_torque_limits)
+            if self._impedance:
+                # --------------------------------------------------------------
+                # Impedance mode: gravity comp + MIT PD
+                # --------------------------------------------------------------
+                tau_ff = self._grav_comp.compute(pos[:6]) * cfg.gravity_comp_scale
+                tau_ff_safe = np.clip(
+                    tau_ff, -cfg.joint_torque_limits, cfg.joint_torque_limits
+                )
 
-            # ------------------------------------------------------------------
-            # Over-current detection
-            # ------------------------------------------------------------------
-            over_limit = np.abs(torque[:6]) > cfg.joint_torque_limits
-            if np.any(over_limit):
-                self._overcurrent_count += 1
-                if self._overcurrent_count >= cfg.overcurrent_threshold:
-                    logger.warning(
-                        "Over-current threshold reached (joints %s). Entering damping mode.",
-                        np.where(over_limit)[0] + 1,
-                    )
-                    damping = True
-                    with self._cmd_lock:
-                        self._damping_mode = True
+                # Over-current detection
+                over_limit = np.abs(torque[:6]) > cfg.joint_torque_limits
+                if np.any(over_limit):
+                    self._overcurrent_count += 1
+                    if self._overcurrent_count >= cfg.overcurrent_threshold:
+                        logger.warning(
+                            "Over-current threshold reached (joints %s). Entering damping mode.",
+                            np.where(over_limit)[0] + 1,
+                        )
+                        damping = True
+                        with self._cmd_lock:
+                            self._damping_mode = True
+                else:
+                    self._overcurrent_count = max(0, self._overcurrent_count - 1)
+
+                if damping:
+                    # Zero stiffness, zero feedforward — only kd damping
+                    kp = np.zeros(6)
+                    tau_ff_safe = np.zeros(6)
+                    q_des_safe = pos[:6].copy()
+                else:
+                    kp = cfg.arm_kp
+                kd = cfg.arm_kd
+                dq_des = np.zeros(6)
+
+                self._motor_chain.set_arm_commands(
+                    kp, kd, q_des_safe, dq_des, tau_ff_safe
+                )
             else:
-                self._overcurrent_count = max(0, self._overcurrent_count - 1)
-
-            # In damping mode: zero stiffness, zero feedforward — only kd damping
-            if damping:
-                kp = np.zeros(6)
-                tau_ff_safe = np.zeros(6)
-                # Hold current position as target to prevent drift when exiting damping
-                q_des_safe = pos[:6].copy()
-            else:
-                kp = cfg.arm_kp
-
-            kd = cfg.arm_kd
-            dq_des = np.zeros(6)
-
-            # ------------------------------------------------------------------
-            # Push to motor chain
-            # ------------------------------------------------------------------
-            self._motor_chain.set_arm_commands(kp, kd, q_des_safe, dq_des, tau_ff_safe)
+                # --------------------------------------------------------------
+                # Position mode: motors' onboard POS_VEL controller does the work
+                # --------------------------------------------------------------
+                self._motor_chain.set_arm_pos_vel(q_des_safe)
 
             # Gripper command
             gripper_q = float(np.interp(

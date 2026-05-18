@@ -52,6 +52,11 @@ class DK1MotorChain:
 
     def __init__(self, config: DK1RobotConfig) -> None:
         self._config = config
+        self._mode = config.control_mode  # "impedance" | "position"
+        if self._mode not in ("impedance", "position"):
+            raise ValueError(
+                f"control_mode must be 'impedance' or 'position', got {self._mode!r}"
+            )
         self._lock = threading.Lock()
 
         # Shared state (written by motor thread, read by server thread)
@@ -60,11 +65,14 @@ class DK1MotorChain:
         self._torque = np.zeros(7)  # Nm
 
         # Shared commands (written by server thread, read by motor thread)
+        # MIT (impedance mode):
         self._arm_kp = config.arm_kp.copy()
         self._arm_kd = config.arm_kd.copy()
         self._arm_q_des = np.zeros(NUM_ARM_JOINTS)
         self._arm_dq_des = np.zeros(NUM_ARM_JOINTS)
         self._arm_tau_ff = np.zeros(NUM_ARM_JOINTS)
+        # POS_VEL (position mode):
+        self._arm_pos_vel = config.pos_mode_joint_vel.copy()
 
         self._gripper_q_des = config.gripper_open_pos
         self._gripper_vel = DM4310_DQ_MAX * config.EMIT_VELOCITY_SCALE
@@ -150,6 +158,22 @@ class DK1MotorChain:
             self._arm_dq_des = dq_des
             self._arm_tau_ff = tau_ff
 
+    def set_arm_pos_vel(
+        self,
+        q_des: np.ndarray,
+        vel: np.ndarray | None = None,
+    ) -> None:
+        """Update POS_VEL command buffer for arm joints (non-blocking).
+
+        Args:
+            q_des: Target positions (rad), shape (6,).
+            vel:   Per-joint velocity limits (rad/s). If None, keeps last set value.
+        """
+        with self._lock:
+            self._arm_q_des = q_des
+            if vel is not None:
+                self._arm_pos_vel = vel
+
     def set_gripper_command(self, q_des: float, vel: float, i_des: float) -> None:
         """Update EMIT command for gripper (non-blocking)."""
         with self._lock:
@@ -194,11 +218,22 @@ class DK1MotorChain:
                 raise RuntimeError(f"Cannot communicate with motor {key!r}")
             print(f"{key} ({motor.MotorType.name}) connected")
 
-        # Switch arm joints to MIT mode
+        # Switch arm joints to the requested control mode
+        arm_mode = Control_Type.MIT if self._mode == "impedance" else Control_Type.POS_VEL
         for name in arm_joint_names:
             motor = self._motors[name]
-            self._control.switchControlMode(motor, Control_Type.MIT)
+            self._control.switchControlMode(motor, arm_mode)
             self._control.enable(motor)
+
+        if self._mode == "position":
+            # Onboard PID + ramp for the DM4340 joints (1–3).
+            cfg = self._config
+            for name in ("joint_1", "joint_2", "joint_3"):
+                m = self._motors[name]
+                self._control.change_motor_param(m, DM_variable.ACC, cfg.pos_mode_acc)
+                self._control.change_motor_param(m, DM_variable.DEC, cfg.pos_mode_dec)
+                self._control.change_motor_param(m, DM_variable.KP_APR, cfg.pos_mode_kp_apr_dm4340)
+                self._control.change_motor_param(m, DM_variable.KI_APR, cfg.pos_mode_ki_apr_dm4340)
 
         # Read initial arm state
         for i, name in enumerate(arm_joint_names):
@@ -207,6 +242,10 @@ class DK1MotorChain:
             self._pos[i] = motor.getPosition()
             self._vel[i] = motor.getVelocity()
             self._torque[i] = motor.getTorque()
+
+        # Seed q_des to the measured position so we don't jump on startup
+        with self._lock:
+            self._arm_q_des = self._pos[:NUM_ARM_JOINTS].copy()
 
         # Calibrate gripper: open until torque threshold, set as zero
         self._calibrate_gripper()
@@ -252,6 +291,7 @@ class DK1MotorChain:
         assert self._control is not None
         period = 1.0 / self._config.motor_thread_hz
         arm_names = [f"joint_{i}" for i in range(1, 7)]
+        impedance = self._mode == "impedance"
 
         while self._running:
             t_start = time.monotonic()
@@ -263,21 +303,27 @@ class DK1MotorChain:
                 q_des = self._arm_q_des.copy()
                 dq_des = self._arm_dq_des.copy()
                 tau_ff = self._arm_tau_ff.copy()
+                arm_pos_vel = self._arm_pos_vel.copy()
                 g_q_des = self._gripper_q_des
                 g_vel = self._gripper_vel
                 g_i_des = self._gripper_i_des
 
-            # Send MIT commands to arm joints and read feedback
+            # Send arm commands and read feedback
             for i, name in enumerate(arm_names):
                 motor = self._motors[name]
-                self._control.controlMIT(
-                    motor,
-                    float(kp[i]),
-                    float(kd[i]),
-                    float(q_des[i]),
-                    float(dq_des[i]),
-                    float(tau_ff[i]),
-                )
+                if impedance:
+                    self._control.controlMIT(
+                        motor,
+                        float(kp[i]),
+                        float(kd[i]),
+                        float(q_des[i]),
+                        float(dq_des[i]),
+                        float(tau_ff[i]),
+                    )
+                else:
+                    self._control.control_Pos_Vel(
+                        motor, float(q_des[i]), float(arm_pos_vel[i])
+                    )
 
             # Send EMIT command to gripper
             self._control.control_pos_force(
