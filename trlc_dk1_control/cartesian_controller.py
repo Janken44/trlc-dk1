@@ -110,6 +110,12 @@ class CartesianControllerConfig:
     max_pos_lag: float = 0.10   # m
     max_rot_lag: float = 0.6    # rad
 
+    # IK control point along the tool approach (X) axis from link6-7 (m).
+    # 0.158 = tool0 tip (default). 0.0 = at link6-7 (wrist joint).
+    # Smaller values move the rotation pivot toward the wrist.
+    # Note: pos_min/pos_max bound the control point, not the gripper tip.
+    control_point_offset: float = 0.158
+
 
 class CartesianController:
     """
@@ -146,7 +152,10 @@ class CartesianController:
             raise ValueError(
                 "DK1Robot config has no mjcf_path/urdf_path — kinematics unavailable."
             )
-        self.kin = DK1Kinematics(model_path)
+        self.kin = DK1Kinematics(
+            model_path,
+            control_point_offset=self.cfg.control_point_offset,
+        )
 
         self._lock = threading.Lock()
         self._target_pos = np.zeros(3)
@@ -275,6 +284,23 @@ class CartesianController:
                 self._target_rot = R_delta @ self._target_rot
             else:
                 raise ValueError(f"frame must be 'world' or 'tool', got {frame!r}")
+
+    def set_target_pose(
+        self,
+        pos: np.ndarray,
+        rot: np.ndarray,
+    ) -> None:
+        """Set the target tool pose directly (world frame).
+
+        Args:
+            pos: (3,) position in metres.
+            rot: (3, 3) rotation matrix.
+        """
+        p = np.clip(np.asarray(pos, dtype=float), self.cfg.pos_min, self.cfg.pos_max)
+        r = np.asarray(rot, dtype=float)
+        with self._lock:
+            self._target_pos = p
+            self._target_rot = r
 
     def set_gripper(self, normalized_pos: float) -> None:
         self.robot.command_gripper(float(normalized_pos))

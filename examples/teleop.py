@@ -9,7 +9,7 @@ follower_config = DK1FollowerConfig(
 )
 
 leader_config = DK1LeaderConfig(
-    port="/dev/tty.usbmodem58FA0830261"
+    port="/dev/tty.usbmodemDCB4D93A6B541"
 )
 
 leader = DK1Leader(leader_config)

@@ -36,7 +36,8 @@ class DK1Kinematics:
         num_dofs:   Arm DoFs (default 6, excludes gripper).
     """
 
-    def __init__(self, model_path: str, num_dofs: int = 6) -> None:
+    def __init__(self, model_path: str, num_dofs: int = 6,
+                 control_point_offset: float | None = None) -> None:
         try:
             import mujoco
         except ImportError as e:
@@ -66,6 +67,10 @@ class DK1Kinematics:
                 if name == "link6-7":
                     self.tool_offset_local = _LINK6_TIP_OFFSET.copy()
                 break
+
+        # Allow caller to override the offset along the approach (X) axis.
+        if control_point_offset is not None:
+            self.tool_offset_local = np.array([control_point_offset, 0.0, 0.0])
 
         if self.ee_body_id < 0:
             raise RuntimeError(
