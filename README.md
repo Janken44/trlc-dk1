@@ -109,6 +109,73 @@ lerobot-record \
 ```
 </details>
 
+<details>
+<summary>Example III: Quest VR Cartesian Teleoperation
+</summary>
+
+Control the arm end-effector directly in Cartesian space using a Meta Quest controller. The arm follows your hand movements in 6DoF — position and orientation — mapped from the Quest world frame to the robot world frame.
+
+**Requirements**
+- Meta Quest 2/3/Pro with developer mode enabled (Meta Horizon app → device → Developer Mode)
+- USB cable (Quest to Mac)
+- `adb` (Android Debug Bridge) installed as a system tool — macOS: `brew install android-platform-tools`
+- `vuer` is included as a package dependency and installed automatically with `uv pip install -e .`
+
+**Run**
+```bash
+# USB (~20ms latency)
+uv run python examples/quest_teleop.py --port YOUR_PORT
+
+# Dry run (no robot — verify tracking and frame alignment before connecting hardware)
+uv run python examples/quest_teleop.py --dry-run
+```
+
+**Logging**
+
+The script logs to `quest_teleop.log` in the repo root (not the terminal). The file is overwritten on each run.
+
+**Connect from headset**
+
+Open Meta Browser on Quest, navigate to:
+```
+http://localhost:8012
+```
+Tap **Enter VR**
+
+**Controls**
+
+| Input | Action |
+|-------|--------|
+| Side trigger (squeeze, hold) | Grab EE setpoint — arm follows controller delta |
+| Side trigger (release) | EE holds last position |
+| Front trigger (analog) | Proportional gripper close |
+
+The horizontal forward axis is derived from the controller's pointing direction at latch time.
+
+**Key parameters** (`CartesianControllerConfig`)
+
+| Parameter | Quest teleop default | Effect |
+|-----------|---------------------|--------|
+| `control_hz` | 200 | IK loop rate (Hz) |
+| `control_point_offset` | 0.02 | Control pivot along tool axis (m); 0 = joint 4, 0.158 = gripper tip |
+| `pos_gain` | 50.0 | Position tracking bandwidth (1/s); higher = faster tracking |
+| `rot_gain` | 50.0 | Rotation tracking bandwidth (1/s) |
+| `max_dq_per_step` | 1.0 | Max joint step per cycle (rad); hardware limits apply beyond this |
+| `pos_min` / `pos_max` | `[-0.5,-0.5,0.05]` / `[0.7,0.5,0.8]` | Workspace bounds for EE setpoint (m) |
+
+**Discarded: Wireless control**
+**Setup (one-time per Quest boot)**
+```bash
+# With Quest plugged in via USB, accept "Allow USB debugging" on the headset:
+adb tcpip 5555
+# Unplug — wireless ADB now available until next reboot
+
+# Wireless ADB (requires setup above; higher jitter, not recommended for precise control)
+uv run python examples/quest_teleop.py --port /dev/ttyACM0 --wireless <quest-ip>
+```
+
+</details>
+
 ## URDF
 
 <p align="center">
