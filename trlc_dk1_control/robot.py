@@ -158,10 +158,11 @@ class DK1Robot:
         """Return normalised gripper position and torque."""
         pos, _, torque = self._motor_chain.get_state()
         cfg = self._config
+        # xp must be increasing for np.interp; closed (-4.7) < open (~0.0)
         normalized = np.interp(
             pos[6],
-            [cfg.gripper_open_pos, cfg.gripper_closed_pos],
-            [0.0, 1.0],
+            [cfg.gripper_closed_pos, self._motor_chain.gripper_open_pos],
+            [1.0, 0.0],
         )
         return {"pos": float(np.clip(normalized, 0.0, 1.0)), "torque": float(torque[6])}
 
@@ -275,6 +276,6 @@ class DK1Robot:
             now = time.monotonic()
             if now - last_log >= 5.0:
                 hz = loop_count / (now - last_log)
-                print(f"[server] {hz:6.1f} Hz  (target {cfg.server_thread_hz:.0f} Hz)  loop={elapsed*1e3:.2f} ms")
+                logger.debug("[server] %6.1f Hz  (target %.0f Hz)  loop=%.2f ms", hz, cfg.server_thread_hz, elapsed*1e3)
                 loop_count = 0
                 last_log = now

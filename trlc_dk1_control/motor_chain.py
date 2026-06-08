@@ -231,17 +231,17 @@ class DK1MotorChain:
                 break
             time.sleep(0.01)
 
-        self.gripper_open_pos = gripper.getPosition()
-
         # Switch to EMIT (Torque_Pos) mode for force-controlled grasping
         self._control.switchControlMode(gripper, Control_Type.Torque_Pos)
 
-        # Read initial gripper state
+        # Read initial gripper state — must refresh AFTER zeroing to get post-zero position
         self._control.refresh_motor_status(gripper)
         self._pos[6] = gripper.getPosition()
         self._vel[6] = gripper.getVelocity()
         self._torque[6] = gripper.getTorque()
 
+        # Post-zero readback: should be ~0.0 (open hard stop = encoder zero)
+        self.gripper_open_pos = gripper.getPosition()
         print("Gripper calibrated: open position =", self.gripper_open_pos)
 
     # -------------------------------------------------------------------------
@@ -321,6 +321,6 @@ class DK1MotorChain:
             now = time.monotonic()
             if now - self._last_perf_log >= 5.0:
                 hz = self._loop_count / (now - self._last_perf_log)
-                print(f"[motor]  {hz:6.1f} Hz  (target {self._config.motor_thread_hz:.0f} Hz)  loop={elapsed*1e3:.2f} ms")
+                logger.debug("[motor]  %6.1f Hz  (target %.0f Hz)  loop=%.2f ms", hz, self._config.motor_thread_hz, elapsed*1e3)
                 self._loop_count = 0
                 self._last_perf_log = now
