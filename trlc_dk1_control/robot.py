@@ -148,10 +148,13 @@ class DK1Robot:
             dict with keys 'pos', 'vel', 'torque', each shape (6,).
         """
         pos, vel, torque = self._motor_chain.get_state()
+        temp_motor, temp_mos = self._motor_chain.get_temperatures()
         return {
             "pos": pos[:6].copy(),
             "vel": vel[:6].copy(),
             "torque": torque[:6].copy(),
+            "temp_motor": temp_motor[:6].copy(),
+            "temp_mos": temp_mos[:6].copy(),
         }
 
     def get_gripper_state(self) -> dict[str, float]:
