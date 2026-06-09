@@ -1,12 +1,16 @@
 from lerobot.scripts.lerobot_replay import replay, ReplayConfig, DatasetReplayConfig
 from lerobot_robot_trlc_dk1.follower import DK1FollowerConfig
 import time
+import rerun as rr
+from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
+
+
 
 # ─────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────
 
-DATASET_REPO_ID = "niclaskoniger/Test_dataset"
+DATASET_REPO_ID = ""
 EPISODE_INDEX   = 0
 
 TEST_DURATION   = 2 * 60 * 60    # Testdauer in Sekunden (2h)
