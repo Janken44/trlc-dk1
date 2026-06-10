@@ -158,8 +158,16 @@ def _repair_episodes_meta(dataset_path: Path) -> None:
     the buffer to disk. This function reconstructs the parquet from existing data.
     """
     episodes_dir = dataset_path / "meta" / "episodes"
-    if episodes_dir.exists() and any(episodes_dir.rglob("*.parquet")):
-        return  # already present
+    if episodes_dir.exists():
+        existing = list(episodes_dir.rglob("*.parquet"))
+        if existing:
+            try:
+                for f in existing:
+                    pq.read_schema(str(f))  # raises ArrowInvalid if corrupted
+                return  # all valid
+            except Exception:
+                pass  # fall through to repair
+        shutil.rmtree(episodes_dir)
 
     data_files = sorted((dataset_path / "data").rglob("*.parquet"))
     if not data_files:
@@ -293,86 +301,98 @@ with Live(LiveDisplay(), console=console, refresh_per_second=4, screen=True) as 
         teleop_action_processor = robot_action_processor = robot_observation_processor = None
 
     episode_idx = 0
-    while episode_idx < remaining and not events["stop_recording"]:
-        total_idx = already_recorded + episode_idx + 1
-        _ui_state["episode"] = total_idx
-        events["exit_early"] = False
-        _set_phase("RECORDING", args.episode_time)
-        _say(f"Recording episode {total_idx} of {args.episodes}", "green")
-
-        if args.dry_run:
-            _dry_record_loop(args.episode_time, events)
-        else:
-            record_loop(
-                robot=robot, events=events, fps=args.fps,
-                teleop_action_processor=teleop_action_processor,
-                robot_action_processor=robot_action_processor,
-                robot_observation_processor=robot_observation_processor,
-                teleop=teleop, dataset=dataset,
-                control_time_s=args.episode_time,
-                single_task=TASK_DESCRIPTION, display_data=True,
-            )
-
-        if events["rerecord_episode"]:
-            _say("Discarding — re-recording episode", "yellow")
-            events["rerecord_episode"] = False
+    try:
+        while episode_idx < remaining and not events["stop_recording"]:
+            total_idx = already_recorded + episode_idx + 1
+            _ui_state["episode"] = total_idx
             events["exit_early"] = False
-            dataset.clear_episode_buffer()
-            continue
-
-        # ESC during recording → discard current episode and stop
-        if events["stop_recording"]:
-            _say("Discarding current episode", "yellow")
-            dataset.clear_episode_buffer()
-            break
-
-        episode_idx += 1
-
-        if episode_idx < remaining:
-            # ── Reset phase: save in background, robot stays live, wait for → ──
-            _set_phase("RESETTING")
-            with _ui_lock:
-                _ui_state["saving"] = True
-            save_thread = threading.Thread(target=dataset.save_episode, daemon=True)
-            save_thread.start()
-            events["exit_early"] = False
-            _say("Reset the environment", "yellow", blocking=True)
-
-            # Suppress → presses until save finishes, then notify
-            def _hold_until_saved(st=save_thread):
-                while st.is_alive():
-                    events["exit_early"] = False
-                    time.sleep(0.05)
-                with _ui_lock:
-                    _ui_state["saving"] = False
-                ui_log(f"Saved ep {total_idx} — press → for next episode", "cyan")
-
-            hold_thread = threading.Thread(target=_hold_until_saved, daemon=True)
-            hold_thread.start()
+            _set_phase("RECORDING", args.episode_time)
+            _say(f"Recording episode {total_idx} of {args.episodes}", "green")
 
             if args.dry_run:
-                hold_thread.join()
-                _dry_record_loop(99999, events)
+                _dry_record_loop(args.episode_time, events)
             else:
                 record_loop(
                     robot=robot, events=events, fps=args.fps,
                     teleop_action_processor=teleop_action_processor,
                     robot_action_processor=robot_action_processor,
                     robot_observation_processor=robot_observation_processor,
-                    teleop=teleop, control_time_s=99999,
+                    teleop=teleop, dataset=dataset,
+                    control_time_s=args.episode_time,
                     single_task=TASK_DESCRIPTION, display_data=True,
                 )
-            save_thread.join()
-            with _ui_lock:
-                _ui_state["saving"] = False
-        else:
-            # Last episode — save synchronously
-            _set_phase("SAVING")
-            dataset.save_episode()
-            ui_log(f"Saved episode {total_idx}  ({already_recorded + episode_idx} total)", "cyan")
 
-    _set_phase("DONE")
-    _say("Recording complete", "bold green")
+            if events["rerecord_episode"]:
+                _say("Discarding — re-recording episode", "yellow")
+                events["rerecord_episode"] = False
+                events["exit_early"] = False
+                dataset.clear_episode_buffer()
+                continue
+
+            # ESC during recording → discard current episode and stop
+            if events["stop_recording"]:
+                _say("Discarding current episode", "yellow")
+                dataset.clear_episode_buffer()
+                break
+
+            episode_idx += 1
+
+            if episode_idx < remaining:
+                # ── Reset phase: save synchronously, then wait for → ──────────
+                _set_phase("RESETTING")
+                with _ui_lock:
+                    _ui_state["saving"] = True
+                save_thread = threading.Thread(target=dataset.save_episode, daemon=True)
+                save_thread.start()
+                events["exit_early"] = False
+                _say("Reset the environment", "yellow", blocking=True)
+
+                # Suppress → presses until save finishes, then notify.
+                # Robot stays live but Rerun is off (display_data=False) to
+                # avoid streaming stale data into the viewer during save.
+                def _hold_until_saved(st=save_thread):
+                    while st.is_alive():
+                        events["exit_early"] = False
+                        time.sleep(0.05)
+                    with _ui_lock:
+                        _ui_state["saving"] = False
+                    ui_log(f"Saved ep {total_idx} — press → for next episode", "cyan")
+
+                hold_thread = threading.Thread(target=_hold_until_saved, daemon=True)
+                hold_thread.start()
+
+                if args.dry_run:
+                    hold_thread.join()
+                    _dry_record_loop(99999, events)
+                else:
+                    record_loop(
+                        robot=robot, events=events, fps=args.fps,
+                        teleop_action_processor=teleop_action_processor,
+                        robot_action_processor=robot_action_processor,
+                        robot_observation_processor=robot_observation_processor,
+                        teleop=teleop, control_time_s=99999,
+                        single_task=TASK_DESCRIPTION, display_data=False,
+                    )
+                save_thread.join()
+                with _ui_lock:
+                    _ui_state["saving"] = False
+            else:
+                # Last episode — save synchronously
+                _set_phase("SAVING")
+                dataset.save_episode()
+                ui_log(f"Saved episode {total_idx}  ({already_recorded + episode_idx} total)", "cyan")
+
+        _set_phase("DONE")
+        _say("Recording complete", "bold green")
+    finally:
+        # Always flush metadata buffer — protects against crashes mid-session.
+        # If the process dies without finalize(), meta/episodes/ is left incomplete
+        # or corrupted, which breaks the next resume().
+        if not args.dry_run:
+            try:
+                dataset.meta.finalize()
+            except Exception:
+                pass
 
 # ── Teardown ──────────────────────────────────────────────────────────────────
 builtins.print = _real_print
@@ -380,7 +400,6 @@ os.dup2(_stderr_orig_fd, 2)   # restore real stderr
 os.close(_stderr_orig_fd)
 
 if not args.dry_run:
-    # Flush meta/episodes/ to disk so LeRobotDataset.resume() works next session
     dataset.finalize()
     robot.disconnect()
     teleop.disconnect()
