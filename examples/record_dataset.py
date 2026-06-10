@@ -8,6 +8,11 @@ import threading
 from collections import deque
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("SVT_LOG", "0")
 os.environ.setdefault("SVT_LOG_LEVEL", "0")
@@ -36,7 +41,6 @@ parser.add_argument("--user", default="jvg")
 parser.add_argument("--episodes", type=int, default=50, help="Target total episodes across all runs")
 parser.add_argument("--fps", type=int, default=60)
 parser.add_argument("--episode-time", type=int, default=90, help="Max episode duration in seconds (press → to end early)")
-parser.add_argument("--reset-time", type=int, default=20, help="Reset phase duration in seconds")
 parser.add_argument("--robot-port", default="/dev/tty.usbmodem00000000050C1")
 parser.add_argument("--leader-port", default="/dev/tty.usbmodem59700732181")
 parser.add_argument("--dataset-root", type=Path, default=Path("~/.cache/lerobot/datasets").expanduser())
@@ -51,7 +55,7 @@ dataset_path = args.dataset_root / REPO_ID
 # ── Terminal UI ───────────────────────────────────────────────────────────────
 console = Console()
 _log_lines: deque[tuple[str, str]] = deque(maxlen=5)
-_ui_state = {"phase": "STARTING", "episode": 0, "total": args.episodes, "phase_start": 0.0, "phase_max": 0}
+_ui_state = {"phase": "STARTING", "episode": 0, "total": args.episodes, "phase_start": 0.0, "phase_max": 0, "saving": False}
 _ui_lock = threading.Lock()
 
 STATE_STYLES = {
@@ -94,6 +98,8 @@ class LiveDisplay:
         status_grid.add_column()
         status_grid.add_row("Task",    TASK_DESCRIPTION + ("  [dim](dry run)[/dim]" if args.dry_run else ""))
         status_grid.add_row("Phase",   Text(state["phase"], style=style))
+        if state["saving"]:
+            status_grid.add_row("", Text("saving previous episode…", style="dim cyan"))
         status_grid.add_row("Episode", f"{state['episode']} / {state['total']}")
         status_grid.add_row("Time",    time_str)
         status_grid.add_row("Keys",    "→ end early   ← discard   ESC stop")
@@ -107,11 +113,11 @@ class LiveDisplay:
             Panel(log_text, title="Log"),
         )
 
-# ── Stderr pipe: route C-level writes (SVT, objc) into the UI log ─────────────
+# ── Stderr pipe: set up fds now, activate redirect inside Live ────────────────
 _pipe_r_fd, _pipe_w_fd = os.pipe()
 _stderr_orig_fd = os.dup(2)
-os.dup2(_pipe_w_fd, 2)
-os.close(_pipe_w_fd)
+# NOTE: os.dup2(_pipe_w_fd, 2) is called AFTER Live starts so pre-Live
+# exceptions print to the real terminal instead of being silently swallowed.
 
 def _stderr_reader():
     with os.fdopen(_pipe_r_fd, "rb") as pipe:
@@ -124,7 +130,7 @@ def _stderr_reader():
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
                 text = line.decode("utf-8", errors="replace").strip()
-                if text:
+                if text and not text.startswith("Map:"):
                     ui_log(text, "dim red")
 
 _stderr_thread = threading.Thread(target=_stderr_reader, daemon=True)
@@ -144,6 +150,68 @@ if not args.dry_run:
 else:
     robot = teleop = None
 
+def _repair_episodes_meta(dataset_path: Path) -> None:
+    """Reconstruct meta/episodes/ from data/*.parquet when finalize() was never called.
+
+    LeRobotDataset.resume() requires meta/episodes/ to exist. With default
+    metadata_buffer_size=10, sessions shorter than 10 episodes never flush
+    the buffer to disk. This function reconstructs the parquet from existing data.
+    """
+    episodes_dir = dataset_path / "meta" / "episodes"
+    if episodes_dir.exists() and any(episodes_dir.rglob("*.parquet")):
+        return  # already present
+
+    data_files = sorted((dataset_path / "data").rglob("*.parquet"))
+    if not data_files:
+        return
+
+    info = json.loads((dataset_path / "meta/info.json").read_text())
+    fps = info["fps"]
+    video_keys = [k for k, v in info["features"].items() if v.get("dtype") == "video"]
+
+    df = pq.read_table(data_files[0]).to_pandas()
+    for f in data_files[1:]:
+        df = pd.concat([df, pq.read_table(f).to_pandas()], ignore_index=True)
+
+    tasks_df = pd.read_parquet(dataset_path / "meta/tasks.parquet")
+    task_name_map = {int(row["task_index"]): name for name, row in tasks_df.iterrows()}
+
+    ep_groups = df.groupby("episode_index")["index"].agg(["min", "max", "count"]).reset_index()
+    ep_task_groups = df.groupby("episode_index")["task_index"].unique()
+
+    records = []
+    cumulative_s = 0.0
+    for _, row in ep_groups.iterrows():
+        ep_idx = int(row["episode_index"])
+        length = int(row["count"])
+        duration_s = length / fps
+
+        episode_tasks = [task_name_map[int(ti)] for ti in sorted(ep_task_groups[ep_idx])]
+
+        rec = {
+            "episode_index": ep_idx,
+            "tasks": episode_tasks,
+            "length": length,
+            "data/chunk_index": 0,
+            "data/file_index": 0,
+            "dataset_from_index": int(row["min"]),
+            "dataset_to_index": int(row["max"]) + 1,
+            "meta/episodes/chunk_index": 0,
+            "meta/episodes/file_index": 0,
+        }
+        for vk in video_keys:
+            rec[f"videos/{vk}/chunk_index"] = 0
+            rec[f"videos/{vk}/file_index"] = 0
+            rec[f"videos/{vk}/from_timestamp"] = cumulative_s
+            rec[f"videos/{vk}/to_timestamp"] = cumulative_s + duration_s
+        cumulative_s += duration_s
+        records.append(rec)
+
+    out_path = episodes_dir / "chunk-000" / "file-000.parquet"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.Table.from_pylist(records), out_path, compression="snappy")
+
+
 if args.restart and dataset_path.exists():
     ui_log(f"Deleting existing dataset at {dataset_path}", "yellow")
     shutil.rmtree(dataset_path)
@@ -155,7 +223,9 @@ if not args.dry_run:
         if has_episodes:
             saved_episodes = json.loads((dataset_path / "meta/info.json").read_text()).get("total_episodes", 0)
             ui_log(f"Resuming dataset ({saved_episodes} episodes already recorded)", "cyan")
+            _repair_episodes_meta(dataset_path)
             dataset = LeRobotDataset.resume(repo_id=REPO_ID, root=str(dataset_path), image_writer_threads=4)
+            dataset.meta._metadata_buffer_size = 1
         else:
             ui_log("Existing dataset has no saved episodes — re-creating", "yellow")
             shutil.rmtree(dataset_path)
@@ -171,6 +241,7 @@ if not args.dry_run:
             repo_id=REPO_ID, root=str(dataset_path), fps=args.fps,
             features={**action_features, **obs_features},
             robot_type=robot.name, use_videos=True, image_writer_threads=4,
+            metadata_buffer_size=1,
         )
     already_recorded = dataset.num_episodes
 else:
@@ -206,13 +277,17 @@ _real_print = builtins.print
 def _patched_print(*a, sep=" ", end="\n", **kw):
     ui_log(sep.join(str(x) for x in a), "dim white")
 
-with Live(LiveDisplay(), console=console, refresh_per_second=4, screen=False) as live:
+with Live(LiveDisplay(), console=console, refresh_per_second=4, screen=True) as live:
     builtins.print = _patched_print
+    os.dup2(_pipe_w_fd, 2)   # activate stderr capture now that Live owns the screen
+    os.close(_pipe_w_fd)
 
     if not args.dry_run:
+        ui_log("Connecting to hardware…", "dim white")
         init_rerun(session_name="recording")
         robot.connect()
         teleop.connect()
+        ui_log("Hardware ready", "dim white")
         teleop_action_processor, robot_action_processor, robot_observation_processor = make_default_processors()
     else:
         teleop_action_processor = robot_action_processor = robot_observation_processor = None
@@ -235,7 +310,7 @@ with Live(LiveDisplay(), console=console, refresh_per_second=4, screen=False) as
                 robot_observation_processor=robot_observation_processor,
                 teleop=teleop, dataset=dataset,
                 control_time_s=args.episode_time,
-                single_task=TASK_DESCRIPTION, display_data=False,
+                single_task=TASK_DESCRIPTION, display_data=True,
             )
 
         if events["rerecord_episode"]:
@@ -245,30 +320,53 @@ with Live(LiveDisplay(), console=console, refresh_per_second=4, screen=False) as
             dataset.clear_episode_buffer()
             continue
 
+        # ESC during recording → discard current episode and stop
+        if events["stop_recording"]:
+            _say("Discarding current episode", "yellow")
+            dataset.clear_episode_buffer()
+            break
+
         episode_idx += 1
 
-        if not events["stop_recording"] and episode_idx < remaining:
-            _set_phase("RESETTING", args.reset_time)
+        if episode_idx < remaining:
+            # ── Reset phase: save in background, robot stays live, wait for → ──
+            _set_phase("RESETTING")
+            with _ui_lock:
+                _ui_state["saving"] = True
             save_thread = threading.Thread(target=dataset.save_episode, daemon=True)
             save_thread.start()
-            ui_log(f"Saving episode {total_idx} in background...", "cyan")
             events["exit_early"] = False
             _say("Reset the environment", "yellow", blocking=True)
 
+            # Suppress → presses until save finishes, then notify
+            def _hold_until_saved(st=save_thread):
+                while st.is_alive():
+                    events["exit_early"] = False
+                    time.sleep(0.05)
+                with _ui_lock:
+                    _ui_state["saving"] = False
+                ui_log(f"Saved ep {total_idx} — press → for next episode", "cyan")
+
+            hold_thread = threading.Thread(target=_hold_until_saved, daemon=True)
+            hold_thread.start()
+
             if args.dry_run:
-                _dry_record_loop(args.reset_time, events)
+                hold_thread.join()
+                _dry_record_loop(99999, events)
             else:
                 record_loop(
                     robot=robot, events=events, fps=args.fps,
                     teleop_action_processor=teleop_action_processor,
                     robot_action_processor=robot_action_processor,
                     robot_observation_processor=robot_observation_processor,
-                    teleop=teleop, control_time_s=args.reset_time,
-                    single_task=TASK_DESCRIPTION, display_data=False,
+                    teleop=teleop, control_time_s=99999,
+                    single_task=TASK_DESCRIPTION, display_data=True,
                 )
             save_thread.join()
-            ui_log(f"Saved episode {total_idx}  ({already_recorded + episode_idx} total)", "cyan")
+            with _ui_lock:
+                _ui_state["saving"] = False
         else:
+            # Last episode — save synchronously
             _set_phase("SAVING")
             dataset.save_episode()
             ui_log(f"Saved episode {total_idx}  ({already_recorded + episode_idx} total)", "cyan")
@@ -280,9 +378,11 @@ with Live(LiveDisplay(), console=console, refresh_per_second=4, screen=False) as
 builtins.print = _real_print
 os.dup2(_stderr_orig_fd, 2)   # restore real stderr
 os.close(_stderr_orig_fd)
-# closing fd 2 write end causes _stderr_thread to drain and exit naturally
 
-console.print(f"Session done. Total episodes recorded: {already_recorded + episode_idx} / {args.episodes}")
 if not args.dry_run:
+    # Flush meta/episodes/ to disk so LeRobotDataset.resume() works next session
+    dataset.finalize()
     robot.disconnect()
     teleop.disconnect()
+
+console.print(f"Session done. Total episodes recorded: {already_recorded + episode_idx} / {args.episodes}")
