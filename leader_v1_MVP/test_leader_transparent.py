@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(message)s")
 BUTTON_ID = 8        # handle button-node Dynamixel ID
 ADDR_BUTTONS = 100   # 1 byte: bit0 = button 1 (D7), bit1 = button 2 (D8)
 
-leader = DK1Leader(DK1LeaderConfig(port="/dev/tty.usbmodem5A460835011"))
+leader = DK1Leader(DK1LeaderConfig(port="/dev/tty.usbmodemE072A1F88B781"))
 leader.connect()
 print("Connected. Move the arm and press the button. Ctrl-C to stop.\n")
 

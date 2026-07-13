@@ -17,6 +17,8 @@
 //            lerobot scans 57600 (factory) .. 1 000 000 during motor ID setup.
 
 #include "driver/uart.h"
+#include "driver/gpio.h"
+#include "soc/gpio_struct.h"
 
 #define DXL_PIN      6         // GPIO6 = D5, single-wire half-duplex
 #define DEFAULT_BAUD 1000000   // used until the host sets a CDC line coding
@@ -30,6 +32,14 @@ static void setUartBaud(uint32_t baud) {
     activeBaud = baud;
     DxlSerial.begin(baud, SERIAL_8N1, DXL_PIN, DXL_PIN);
     uart_set_mode(UART_NUM_1, UART_MODE_RS485_HALF_DUPLEX);
+    // OPEN-DRAIN on the shared DATA pad: RS485 half-duplex suppresses the echo but
+    // leaves the pad push-pull, driving idle-HIGH. That fights any other push-pull
+    // transmitter on the wire (e.g. the handle button node — a second ESP32) and
+    // corrupts every packet. Open-drain drives LOW only and releases HIGH to the
+    // pull-up, like a real half-duplex transceiver. Re-applied here because every
+    // DxlSerial.begin() (baud change) reconfigures the pad back to push-pull.
+    GPIO.pin[DXL_PIN].pad_driver = 1;
+    gpio_pullup_en((gpio_num_t)DXL_PIN);
 }
 
 // Fires whenever the host changes the CDC line coding (baud) — the event a CH343P

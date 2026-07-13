@@ -28,6 +28,8 @@
 
 #include <Dynamixel2Arduino.h>
 #include "driver/uart.h"
+#include "driver/gpio.h"
+#include "soc/gpio_struct.h"
 
 using namespace DYNAMIXEL;
 
@@ -80,6 +82,14 @@ void setup() {
     DxlSerial.begin(DXL_BAUD, SERIAL_8N1, DXL_PIN, DXL_PIN);
     uart_set_mode(UART_NUM_1, UART_MODE_RS485_HALF_DUPLEX);
     dxl_port.setOpenState(true);
+
+    // OPEN-DRAIN on the shared DATA pad. RS485 half-duplex suppresses the echo but
+    // leaves the TX pad push-pull, actively driving idle-HIGH — which fights any
+    // other push-pull transmitter on the wire (e.g. the ESP32 base bridge: 20 mA vs
+    // 20 mA -> every packet corrupted -> dead bus). Open-drain drives LOW only and
+    // releases HIGH to the bus pull-up, like a proper half-duplex transceiver.
+    GPIO.pin[DXL_PIN].pad_driver = 1;          // pad to open-drain (keeps GPIO-matrix routing)
+    gpio_pullup_en((gpio_num_t)DXL_PIN);       // weak internal pull-up as backup
 
     dxl.setPortProtocolVersion(2.0);
     dxl.setFirmwareVersion(DXL_FW_VER);
