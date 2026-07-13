@@ -17,6 +17,7 @@ import logging
 import time
 import numpy as np
 
+from dynamixel_sdk import COMM_SUCCESS
 from lerobot.teleoperators.teleoperator import Teleoperator, TeleoperatorConfig
 from lerobot.utils.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
 from lerobot.motors import Motor, MotorNormMode
@@ -26,6 +27,12 @@ from lerobot.motors.dynamixel import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Handle button node — a separate Protocol 2.0 slave on the same TTL bus (firmware:
+# leader_v1_MVP/sketch_handle-buttonnode). It is NOT a configured motor, so we read
+# it directly off the bus's packet handler rather than through sync_read.
+BUTTON_NODE_ID = 8
+BUTTON_NODE_ADDR = 100   # 1 byte: bit 0 = button 1, bit 1 = button 2 (1 = pressed)
 
 
 @TeleoperatorConfig.register_subclass("dk1_leader")
@@ -117,6 +124,24 @@ class DK1Leader(Teleoperator):
         dt_ms = (time.perf_counter() - start) * 1e3
         logger.debug(f"{self} read action: {dt_ms:.1f}ms")
         return action
+
+    def read_handle_buttons(self) -> int:
+        """Read the handle button-node register (ID 8, addr 100).
+
+        Returns the raw byte: bit 0 = button 1, bit 1 = button 2 (1 = pressed).
+        Decode with `val & 0b01` / `val & 0b10`. Returns -1 if the node did not
+        respond (e.g. no button node populated), so callers can treat a missing
+        node as "nothing pressed".
+        """
+        if not self.is_connected:
+            raise DeviceNotConnectedError(f"{self} is not connected.")
+
+        val, comm, err = self.bus.packet_handler.read1ByteTxRx(
+            self.bus.port_handler, BUTTON_NODE_ID, BUTTON_NODE_ADDR
+        )
+        if comm != COMM_SUCCESS or err != 0:
+            return -1
+        return val
 
     def send_feedback(self, feedback: dict[str, float]) -> None:
         # TODO(rcadene, aliberts): Implement force feedback
